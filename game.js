@@ -1,5 +1,6 @@
 const canvas = document.getElementById("gameCanvas")
 const ctx = canvas.getContext("2d")
+const { Engine, Bodies, Body, Composite } = Matter
 const boardSize = canvas.width
 const playMin = 57
 const playMax = boardSize - 57
@@ -17,6 +18,13 @@ const imageSources = {
 }
 
 const formation = []
+
+const engine = Engine.create({ enableSleeping: true })
+const coinBodies = []
+let strikerBody
+let previousTime = performance.now()
+
+engine.gravity.scale = 0
 
 Object.entries(imageSources).forEach(([name, src]) => {
   const image = new Image()
@@ -40,6 +48,54 @@ for (let index = 0; index < 12; index += 1) {
   addCoin(index % 2 === 0 ? "black" : "white", center + Math.cos(angle) * outerRadius, center + Math.sin(angle) * outerRadius)
 }
 
+const movingOptions = {
+  restitution: 0.64,
+  friction: 0.055,
+  frictionStatic: 0.08,
+  frictionAir: 0.032,
+  density: 0.0028,
+  sleepThreshold: 45
+}
+
+formation.forEach((coin) => {
+
+  const body = Bodies.circle(coin.x, coin.y, coinSize * 0.43, { ...movingOptions, label: `coin:${coin.type}` })
+  body.coinType = coin.type
+  coinBodies.push(body)
+})
+
+strikerBody = Bodies.circle(center, boardSize - 137, strikerSize * 0.43, { ...movingOptions,
+  density: 0.0044, restitution: 0.6, label: "striker"
+})
+
+const wallOptions = {
+  isStatic: true,
+  restitution: 0.54,
+  friction: 0.09,
+  label: "board-wall"
+}
+const walls = [ Bodies.rectangle(center, 31, boardSize - 112, 26, wallOptions),
+
+  Bodies.rectangle(center, boardSize - 31, boardSize - 112, 26, wallOptions),
+
+  Bodies.rectangle(31, center, 26, boardSize - 112, wallOptions),
+
+  Bodies.rectangle(boardSize - 31, center, 26, boardSize - 112, wallOptions)
+]
+
+const pocketSensors = [
+  [playMin, playMin],
+  [playMax, playMin],
+  [playMin, playMax],
+  [playMax, playMax]
+].map(([x, y], index) => Bodies.circle(x, y, 25, {
+  isStatic: true,
+  isSensor: true,
+  label: `pocket:${index}`
+}))
+
+Composite.add(engine.world, [...coinBodies, strikerBody, ...walls, ...pocketSensors])
+
 const drawBoard = () => {
 
   ctx.clearRect(0, 0, boardSize, boardSize)
@@ -50,7 +106,7 @@ const drawBoard = () => {
 
     ctx.save()
     ctx.globalAlpha = 0.22
-    
+
     const pattern = ctx.createPattern(images.board, "repeat")
     ctx.fillStyle = pattern
     ctx.fillRect(0, 0, boardSize, boardSize)
@@ -137,7 +193,7 @@ const drawBaseline = (y, topSide) => {
   ctx.moveTo(left, y + spacing / 2)
   ctx.lineTo(right, y + spacing / 2)
   ctx.stroke();
-
+  
   [left, right].forEach((x) => {
 
     ctx.beginPath()
@@ -192,12 +248,15 @@ const drawSprite = (name, x, y, size) => {
 
 }
 
-const render = () => {
+const render = (time = performance.now()) => {
+
+  const delta = Math.min(time - previousTime, 33.333)
+  previousTime = time
+  Engine.update(engine, delta)
 
   drawBoard()
-  formation.forEach((coin) => drawSprite(coin.type, coin.x, coin.y, coinSize))
-  drawSprite("striker", center, boardSize - 137, strikerSize)
-  
+  coinBodies.forEach((body) => drawSprite(body.coinType, body.position.x, body.position.y, coinSize))
+  drawSprite("striker", strikerBody.position.x, strikerBody.position.y, strikerSize)
   requestAnimationFrame(render)
 }
 
