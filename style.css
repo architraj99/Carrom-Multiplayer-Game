@@ -93,6 +93,8 @@ canvas {
   border: 4px solid #5a3218;
   background: #e8d5a8;
   image-rendering: auto;
+  touch-action: none;
+  cursor: crosshair;
 }
 
 .table-note {
