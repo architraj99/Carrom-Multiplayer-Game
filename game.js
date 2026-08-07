@@ -1,6 +1,6 @@
 const canvas = document.getElementById("gameCanvas")
 const ctx = canvas.getContext("2d")
-const { Engine, Bodies, Body, Composite } = Matter
+const { Engine, Bodies, Body, Composite, Events, Sleeping } = Matter
 const boardSize = canvas.width
 const playMin = 57
 const playMax = boardSize - 57
@@ -29,6 +29,20 @@ let phase = "placing"
 let isDragging = false
 let dragPoint = null
 let shotStartedAt = 0
+
+let shotRecord = null
+let strikerInWorld = true
+let queenBody = null
+
+const players = [
+  { name: "Player 1", piece: "white", score: 0, pocketedBodies: [] },
+  { name: "Player 2", piece: "black", score: 0, pocketedBodies: [] }
+]
+const queenState = {
+  pendingPlayer: null,
+  owner: null
+}
+let lastRuling = "Player 1 breaks"
 
 engine.gravity.scale = 0
 
@@ -70,6 +84,7 @@ formation.forEach((coin) => {
     label: `coin:${coin.type}`
   })
   body.coinType = coin.type
+  if (coin.type === "queen") queenBody = body
   coinBodies.push(body)
 })
 
@@ -84,14 +99,13 @@ const wallOptions = {
   label: "board-wall"
 }
 const walls = [ Bodies.rectangle(center, 31, boardSize - 112, 26, wallOptions),
-
+  
   Bodies.rectangle(center, boardSize - 31, boardSize - 112, 26, wallOptions),
-
+  
   Bodies.rectangle(31, center, 26, boardSize - 112, wallOptions),
-
+  
   Bodies.rectangle(boardSize - 31, center, 26, boardSize - 112, wallOptions)
 ]
-
 const pocketSensors = [
   [playMin, playMin],
   [playMax, playMin],
@@ -105,6 +119,18 @@ const pocketSensors = [
 
 Composite.add(engine.world, [...coinBodies, strikerBody, ...walls, ...pocketSensors])
 Body.setStatic(strikerBody, true)
+
+Events.on(engine, "collisionStart", (event) => {
+
+  if (!shotRecord) return
+
+  event.pairs.forEach((pair) => {
+
+    const labels = [pair.bodyA.label, pair.bodyB.label]
+    const strikerHitCoin = labels.includes("striker") && labels.some((label) => label.startsWith("coin:"))
+    if (strikerHitCoin) shotRecord.touchedCoin = true
+  })
+})
 
 const baselineY = () => currentPlayer === 0 ? boardSize - 137 : 137
 const baselineMinX = 196
@@ -137,7 +163,7 @@ canvas.addEventListener("pointerdown", (event) => {
   if (!onBaseline && distanceFromStriker > strikerSize) return
 
   if (onBaseline && distanceFromStriker > strikerSize) placeStriker(point.x)
-
+    
   isDragging = true
   dragPoint = point
   canvas.setPointerCapture(event.pointerId)
@@ -169,11 +195,18 @@ const releaseShot = (event) => {
   const velocityScale = 0.145
   Body.setStatic(strikerBody, false)
 
+  Sleeping.set(strikerBody, false)
   Body.setVelocity(strikerBody, {
     x: pullX * scale * velocityScale,
     y: pullY * scale * velocityScale
   })
   phase = "moving"
+  shotRecord = {
+    touchedCoin: false,
+    pocketed: [],
+    strikerPocketed: false,
+    wrongFirst: false
+  }
   dragPoint = null
   shotStartedAt = performance.now()
 }
@@ -185,14 +218,184 @@ canvas.addEventListener("pointercancel", () => {
 })
 
 const allPiecesSettled = () => {
-  const pieces = [...coinBodies, strikerBody]
+  const pieces = strikerInWorld ? [...coinBodies, strikerBody] : [...coinBodies]
   return pieces.every((body) => body.isSleeping || body.speed < 0.11)
 }
 
 const prepareStriker = () => {
+
+  if (!strikerInWorld) {
+    Composite.add(engine.world, strikerBody)
+    strikerInWorld = true
+  }
+  
   Body.setStatic(strikerBody, true)
+  strikerBody.collisionFilter.mask = 4294967295
   placeStriker(center)
   phase = "placing"
+  shotRecord = null
+}
+
+const removeCoin = (body) => {
+  const index = coinBodies.indexOf(body)
+  if (index >= 0) coinBodies.splice(index, 1)
+  Composite.remove(engine.world, body)
+}
+
+const spotIsClear = (x, y, radius = 34) => coinBodies.every((body) => Math.hypot(body.position.x - x, body.position.y - y) > radius)
+
+const findReturnSpot = () => {
+
+  if (spotIsClear(center, center)) return { x: center, y: center }
+
+  for (let ring = 1; ring <= 4; ring += 1) {
+
+    const radius = ring * 35
+
+    for (let step = 0; step < 12; step += 1) {
+      
+      const angle = step * Math.PI / 6
+      const x = center + Math.cos(angle) * radius
+      const y = center + Math.sin(angle) * radius
+
+      if (spotIsClear(x, y)) return { x, y }
+    }
+  }
+  return { x: center, y: center }
+}
+
+const returnCoin = (body) => {
+
+  const spot = findReturnSpot()
+  Body.setPosition(body, spot)
+  Body.setVelocity(body, { x: 0, y: 0 })
+  Body.setAngularVelocity(body, 0)
+
+  Sleeping.set(body, false)
+  coinBodies.push(body)
+  Composite.add(engine.world, body)
+}
+
+const pocketCoin = (body) => {
+
+  if (!shotRecord || body.isPocketed) return
+  body.isPocketed = true
+  const firstRegular = shotRecord.pocketed.find((entry) => entry.type !== "queen")
+
+  if (!firstRegular && body.coinType !== "queen" && body.coinType !== players[currentPlayer].piece) shotRecord.wrongFirst = true
+
+  shotRecord.pocketed.push({ type: body.coinType, body })
+  removeCoin(body)
+}
+
+const pocketStriker = () => {
+
+  if (!shotRecord || shotRecord.strikerPocketed) return
+
+  shotRecord.strikerPocketed = true
+  Composite.remove(engine.world, strikerBody)
+  strikerInWorld = false
+
+  strikerBody.collisionFilter.mask = 0
+}
+
+const detectPockets = () => {
+  const pocketPoints = [
+    [playMin, playMin],
+    [playMax, playMin],
+    [playMin, playMax],
+    [playMax, playMax]
+  ]
+  coinBodies.slice().forEach((body) => {
+    const inside = pocketPoints.some(([x, y]) => Math.hypot(body.position.x - x, body.position.y - y) < 24)
+    if (inside) pocketCoin(body)
+  })
+
+  if (strikerInWorld) {
+    const strikerInside = pocketPoints.some(([x, y]) => Math.hypot(strikerBody.position.x - x, strikerBody.position.y - y) < 25)
+    if (strikerInside) pocketStriker()
+  }
+}
+
+const awardRegularCoins = (entries) => {
+
+  entries.filter((entry) => entry.type !== "queen").forEach((entry) => {
+
+    const owner = entry.type === "white" ? 0 : 1
+    entry.body.isPocketed = true
+    players[owner].pocketedBodies.push(entry.body)
+    players[owner].score += 1
+  })
+}
+
+const returnQueen = () => {
+  if (!queenBody || coinBodies.includes(queenBody)) return
+
+  queenBody.isPocketed = false
+  returnCoin(queenBody)
+  queenState.pendingPlayer = null
+}
+
+const coverQueen = (playerIndex) => {
+  queenState.owner = playerIndex
+  queenState.pendingPlayer = null
+  players[playerIndex].score += 3
+}
+
+const applyFoulPenalty = (playerIndex) => {
+  const player = players[playerIndex]
+  const penaltyBody = player.pocketedBodies.pop()
+  if (!penaltyBody) return false
+  penaltyBody.isPocketed = false
+  player.score = Math.max(0, player.score - 1)
+
+  returnCoin(penaltyBody)
+  return true
+}
+
+const finishShot = () => {
+
+  const record = shotRecord
+  const shooter = currentPlayer
+  const ownEntries = record.pocketed.filter((entry) => entry.type === players[shooter].piece)
+  const queenEntry = record.pocketed.find((entry) => entry.type === "queen")
+  const foul = record.strikerPocketed || !record.touchedCoin || record.wrongFirst
+
+  awardRegularCoins(record.pocketed)
+
+  if (queenEntry) {
+    if (foul) returnQueen()
+    else if (ownEntries.length) coverQueen(shooter)
+    else queenState.pendingPlayer = shooter
+  }
+
+  else if (queenState.pendingPlayer === shooter) {
+    if (!foul && ownEntries.length) coverQueen(shooter)
+    else returnQueen()
+  }
+
+  if (foul) {
+    const paid = applyFoulPenalty(shooter)
+    if (record.strikerPocketed) lastRuling = paid ? "Striker foul · one coin returned" : "Striker foul · turn lost"
+    else if (record.wrongFirst) lastRuling = paid ? "Wrong coin first · one coin returned" : "Wrong coin first · turn lost"
+    else lastRuling = paid ? "No contact · one coin returned" : "No coin touched · turn lost"
+    currentPlayer = 1 - currentPlayer
+  }
+   
+  else if (queenState.pendingPlayer === shooter) {
+    lastRuling = "Queen pocketed · cover it now"
+  }
+  
+  else if (ownEntries.length) {
+    lastRuling = queenEntry ? "Queen covered · shoot again" : "Own coin pocketed · shoot again"
+  }
+  
+  else {
+    lastRuling = "No own coin · turn passes"
+    currentPlayer = 1 - currentPlayer
+  }
+
+  prepareStriker()
 }
 
 const drawBoard = () => {
@@ -354,7 +557,7 @@ const drawAimGuide = () => {
   const pullY = strikerBody.position.y - dragPoint.y
   const rawLength = Math.hypot(pullX, pullY)
   const pullLength = Math.min(rawLength, 150)
-
+  
   if (!rawLength) return
 
   const directionX = pullX / rawLength
@@ -400,12 +603,14 @@ const render = (time = performance.now()) => {
   previousTime = time
   Engine.update(engine, delta)
 
+  if (phase === "moving") detectPockets()
+
   drawBoard()
   coinBodies.forEach((body) => drawSprite(body.coinType, body.position.x, body.position.y, coinSize))
   drawSprite("striker", strikerBody.position.x, strikerBody.position.y, strikerSize)
   drawAimGuide()
 
-  if (phase === "moving" && time - shotStartedAt > 650 && allPiecesSettled()) prepareStriker()
+  if (phase === "moving" && time - shotStartedAt > 650 && allPiecesSettled()) finishShot()
 
   requestAnimationFrame(render)
 }
