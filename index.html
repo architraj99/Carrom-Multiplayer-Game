@@ -18,8 +18,52 @@
             <p class="subtitle">Two Players ~ One Board</p>
         </header>
 
-        <div class="board-frame">
-            <canvas id="gameCanvas" width="760" height="760" aria-label="Two-player Carrom Board"></canvas>
+        <section class="hud" aria-label="Match Scoreboard">
+
+            <article class="player-panel is-active" id="player1Panel">
+                <span class="panel-label">Player 1</span>
+                <strong class="piece-name">White</strong>
+                <span class="score" id="player1Score">00</span>
+
+                <div class="coin-rack" id="player1Rack" aria-label="Player 1 pocketed coins"></div>
+            </article>
+
+            <div class="turn-panel">
+
+                <span class="panel-label">Now shooting</span>
+                <strong id="turnName">Player 1</strong>
+
+                <span class="ruling" id="rulingText">Player 1 breaks</span>
+            </div>
+
+            <article class="player-panel" id="player2Panel">
+
+                <span class="panel-label">Player 2</span>
+                <strong class="piece-name">Black</strong>
+
+                <span class="score" id="player2Score">00</span>
+
+                <div class="coin-rack" id="player2Rack" aria-label="Player 2 pocketed coins"></div>
+            </article>
+
+        </section>
+
+        <div class="board-stage">
+
+            <div class="board-frame">
+
+                <canvas id="gameCanvas" width="760" height="760" aria-label="Two-player Carrom Board"></canvas>
+            </div>
+
+            <section class="game-over" id="gameOver" hidden>
+
+                <span class="game-over-kicker">Match Complete</span>
+                <h2 id="winnerText">Player 1 wins</h2>
+                <p id="finalScore">12 - 9</p>
+
+                <span class="game-over-note">Refresh the page for a new match</span>
+
+            </section>
         </div>
 
         <p class="table-note">Place on your line. Pull back. Release to strike</p>

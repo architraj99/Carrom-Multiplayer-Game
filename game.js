@@ -1,5 +1,16 @@
 const canvas = document.getElementById("gameCanvas")
 const ctx = canvas.getContext("2d")
+
+const playerPanels = [document.getElementById("player1Panel"), document.getElementById("player2Panel")]
+
+const scoreElements = [document.getElementById("player1Score"), document.getElementById("player2Score")]
+const rackElements = [document.getElementById("player1Rack"), document.getElementById("player2Rack")]
+const turnNameElement = document.getElementById("turnName")
+const rulingElement = document.getElementById("rulingText")
+const gameOverElement = document.getElementById("gameOver")
+const winnerElement = document.getElementById("winnerText")
+const finalScoreElement = document.getElementById("finalScore")
+
 const { Engine, Bodies, Body, Composite, Events, Sleeping } = Matter
 const boardSize = canvas.width
 const playMin = 57
@@ -33,6 +44,7 @@ let shotStartedAt = 0
 let shotRecord = null
 let strikerInWorld = true
 let queenBody = null
+let lastCollisionSoundAt = 0
 
 const players = [
   { name: "Player 1", piece: "white", score: 0, pocketedBodies: [] },
@@ -43,6 +55,24 @@ const queenState = {
   owner: null
 }
 let lastRuling = "Player 1 breaks"
+
+const sounds = {
+  shot: new Audio("assets/shot.ogg"),
+  collision: new Audio("assets/collision.ogg"),
+  pocket: new Audio("assets/pocket.ogg"),
+  foul: new Audio("assets/foul.ogg")
+}
+
+Object.values(sounds).forEach((sound) => sound.preload = "auto")
+
+const playSound = (name, volume = 0.5) => {
+  const source = sounds[name]
+  if (!source) return
+  const sound = source.cloneNode()
+  sound.volume = volume
+  const playback = sound.play()
+  if (playback) playback.catch(() => {})
+}
 
 engine.gravity.scale = 0
 
@@ -99,11 +129,11 @@ const wallOptions = {
   label: "board-wall"
 }
 const walls = [ Bodies.rectangle(center, 31, boardSize - 112, 26, wallOptions),
-  
+
   Bodies.rectangle(center, boardSize - 31, boardSize - 112, 26, wallOptions),
-  
+
   Bodies.rectangle(31, center, 26, boardSize - 112, wallOptions),
-  
+
   Bodies.rectangle(boardSize - 31, center, 26, boardSize - 112, wallOptions)
 ]
 const pocketSensors = [
@@ -129,6 +159,18 @@ Events.on(engine, "collisionStart", (event) => {
     const labels = [pair.bodyA.label, pair.bodyB.label]
     const strikerHitCoin = labels.includes("striker") && labels.some((label) => label.startsWith("coin:"))
     if (strikerHitCoin) shotRecord.touchedCoin = true
+
+    const pieceCollision = labels.every((label) => label === "striker" || label.startsWith("coin:"))
+    const now = performance.now()
+
+    if (pieceCollision && phase === "moving" && now - lastCollisionSoundAt > 65) {
+      const relativeSpeed = Math.hypot(pair.bodyA.velocity.x - pair.bodyB.velocity.x, pair.bodyA.velocity.y - pair.bodyB.velocity.y)
+      
+      if (relativeSpeed > 0.45) {
+        playSound("collision", Math.min(0.65, 0.16 + relativeSpeed / 32))
+        lastCollisionSoundAt = now
+      }
+    }
   })
 })
 
@@ -146,7 +188,7 @@ const pointerPosition = (event) => {
 }
 
 const placeStriker = (x) => {
-
+  
   const nextX = Math.max(baselineMinX, Math.min(baselineMaxX, x))
   Body.setPosition(strikerBody, { x: nextX, y: baselineY() })
   Body.setVelocity(strikerBody, { x: 0, y: 0 })
@@ -159,11 +201,11 @@ canvas.addEventListener("pointerdown", (event) => {
   const point = pointerPosition(event)
   const distanceFromStriker = Math.hypot(point.x - strikerBody.position.x, point.y - strikerBody.position.y)
   const onBaseline = Math.abs(point.y - baselineY()) <= 34 && point.x >= baselineMinX - 20 && point.x <= baselineMaxX + 20
-
+ 
   if (!onBaseline && distanceFromStriker > strikerSize) return
 
   if (onBaseline && distanceFromStriker > strikerSize) placeStriker(point.x)
-    
+
   isDragging = true
   dragPoint = point
   canvas.setPointerCapture(event.pointerId)
@@ -175,7 +217,7 @@ canvas.addEventListener("pointermove", (event) => {
 })
 
 const releaseShot = (event) => {
-
+  
   if (!isDragging || phase !== "placing") return
   isDragging = false
 
@@ -200,6 +242,7 @@ const releaseShot = (event) => {
     x: pullX * scale * velocityScale,
     y: pullY * scale * velocityScale
   })
+  playSound("shot", Math.min(0.75, 0.28 + pullLength / 300))
   phase = "moving"
   shotRecord = {
     touchedCoin: false,
@@ -228,12 +271,13 @@ const prepareStriker = () => {
     Composite.add(engine.world, strikerBody)
     strikerInWorld = true
   }
-  
+
   Body.setStatic(strikerBody, true)
   strikerBody.collisionFilter.mask = 4294967295
   placeStriker(center)
   phase = "placing"
   shotRecord = null
+  updateHud()
 }
 
 const removeCoin = (body) => {
@@ -253,7 +297,7 @@ const findReturnSpot = () => {
     const radius = ring * 35
 
     for (let step = 0; step < 12; step += 1) {
-      
+
       const angle = step * Math.PI / 6
       const x = center + Math.cos(angle) * radius
       const y = center + Math.sin(angle) * radius
@@ -283,9 +327,10 @@ const pocketCoin = (body) => {
   const firstRegular = shotRecord.pocketed.find((entry) => entry.type !== "queen")
 
   if (!firstRegular && body.coinType !== "queen" && body.coinType !== players[currentPlayer].piece) shotRecord.wrongFirst = true
-
+  
   shotRecord.pocketed.push({ type: body.coinType, body })
   removeCoin(body)
+  playSound("pocket", body.coinType === "queen" ? 0.68 : 0.52)
 }
 
 const pocketStriker = () => {
@@ -297,6 +342,7 @@ const pocketStriker = () => {
   strikerInWorld = false
 
   strikerBody.collisionFilter.mask = 0
+  playSound("pocket", 0.55)
 }
 
 const detectPockets = () => {
@@ -367,8 +413,8 @@ const finishShot = () => {
     if (foul) returnQueen()
     else if (ownEntries.length) coverQueen(shooter)
     else queenState.pendingPlayer = shooter
-  }
-
+  } 
+  
   else if (queenState.pendingPlayer === shooter) {
     if (!foul && ownEntries.length) coverQueen(shooter)
     else returnQueen()
@@ -380,8 +426,9 @@ const finishShot = () => {
     else if (record.wrongFirst) lastRuling = paid ? "Wrong coin first · one coin returned" : "Wrong coin first · turn lost"
     else lastRuling = paid ? "No contact · one coin returned" : "No coin touched · turn lost"
     currentPlayer = 1 - currentPlayer
+    playSound("foul", 0.58)
   }
-   
+  
   else if (queenState.pendingPlayer === shooter) {
     lastRuling = "Queen pocketed · cover it now"
   }
@@ -395,7 +442,50 @@ const finishShot = () => {
     currentPlayer = 1 - currentPlayer
   }
 
+  if (checkGameOver()) return
   prepareStriker()
+}
+
+const updateRack = (element, playerIndex) => {
+
+  element.replaceChildren()
+
+  players[playerIndex].pocketedBodies.forEach(() => {
+
+    const coin = document.createElement("img")
+    coin.className = "rack-coin"
+    coin.alt = ""
+    coin.src = playerIndex === 0 ? "assets/coin-white.png" : "assets/coin-black.png"
+    element.appendChild(coin)
+  })
+}
+
+const updateHud = () => {
+
+  players.forEach((player, index) => {
+
+    scoreElements[index].textContent = String(player.score).padStart(2, "0")
+    playerPanels[index].classList.toggle("is-active", index === currentPlayer && phase !== "gameover")
+    updateRack(rackElements[index], index)
+  })
+
+  turnNameElement.textContent = phase === "gameover" ? "Game over" : players[currentPlayer].name
+  rulingElement.textContent = lastRuling
+}
+
+const checkGameOver = () => {
+
+  const regularCoinsLeft = coinBodies.some((body) => body.coinType !== "queen")
+  if (regularCoinsLeft || queenState.owner === null) return false
+  phase = "gameover"
+
+  const winner = players[0].score > players[1].score ? 0 : 1
+  lastRuling = `${players[winner].name} wins the board`
+  winnerElement.textContent = `${players[winner].name} wins`
+  finalScoreElement.textContent = `${players[0].score} — ${players[1].score}`
+  gameOverElement.hidden = false
+  updateHud()
+  return true
 }
 
 const drawBoard = () => {
@@ -557,7 +647,7 @@ const drawAimGuide = () => {
   const pullY = strikerBody.position.y - dragPoint.y
   const rawLength = Math.hypot(pullX, pullY)
   const pullLength = Math.min(rawLength, 150)
-  
+
   if (!rawLength) return
 
   const directionX = pullX / rawLength
@@ -572,7 +662,7 @@ const drawAimGuide = () => {
 
   ctx.moveTo(strikerBody.position.x + directionX * 25, strikerBody.position.y + directionY * 25)
   ctx.lineTo(strikerBody.position.x + directionX * guideLength, strikerBody.position.y + directionY * guideLength)
-
+  
   ctx.stroke()
   ctx.setLineDash([])
   ctx.fillStyle = "#6b3f1d"
@@ -616,3 +706,4 @@ const render = (time = performance.now()) => {
 }
 
 render()
+updateHud()
