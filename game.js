@@ -10,6 +10,8 @@ const rulingElement = document.getElementById("rulingText")
 const gameOverElement = document.getElementById("gameOver")
 const winnerElement = document.getElementById("winnerText")
 const finalScoreElement = document.getElementById("finalScore")
+const restartButton = document.getElementById("restartButton")
+const playAgainButton = document.getElementById("playAgainButton")
 
 const { Engine, Bodies, Body, Composite, Events, Sleeping } = Matter
 const boardSize = canvas.width
@@ -32,6 +34,7 @@ const formation = []
 
 const engine = Engine.create({ enableSleeping: true })
 const coinBodies = []
+const allCoinBodies = []
 let strikerBody
 let previousTime = performance.now()
 
@@ -114,8 +117,10 @@ formation.forEach((coin) => {
     label: `coin:${coin.type}`
   })
   body.coinType = coin.type
+  body.startPosition = { x: coin.x, y: coin.y }
   if (coin.type === "queen") queenBody = body
   coinBodies.push(body)
+  allCoinBodies.push(body)
 })
 
 strikerBody = Bodies.circle(center, boardSize - 137, strikerSize * 0.43, { ...movingOptions,
@@ -151,7 +156,7 @@ Composite.add(engine.world, [...coinBodies, strikerBody, ...walls, ...pocketSens
 Body.setStatic(strikerBody, true)
 
 Events.on(engine, "collisionStart", (event) => {
-
+  
   if (!shotRecord) return
 
   event.pairs.forEach((pair) => {
@@ -162,10 +167,10 @@ Events.on(engine, "collisionStart", (event) => {
 
     const pieceCollision = labels.every((label) => label === "striker" || label.startsWith("coin:"))
     const now = performance.now()
-
+    
     if (pieceCollision && phase === "moving" && now - lastCollisionSoundAt > 65) {
       const relativeSpeed = Math.hypot(pair.bodyA.velocity.x - pair.bodyB.velocity.x, pair.bodyA.velocity.y - pair.bodyB.velocity.y)
-      
+
       if (relativeSpeed > 0.45) {
         playSound("collision", Math.min(0.65, 0.16 + relativeSpeed / 32))
         lastCollisionSoundAt = now
@@ -187,9 +192,25 @@ const pointerPosition = (event) => {
   }
 }
 
+const strikerSpotIsClear = (x) => coinBodies.every((body) => Math.hypot(body.position.x - x, body.position.y - baselineY()) > coinSize * 0.43 + strikerSize * 0.43 + 5)
+
+const safeBaselineX = (requestedX) => {
+
+  const origin = Math.max(baselineMinX, Math.min(baselineMaxX, requestedX))
+
+  for (let offset = 0; offset <= baselineMaxX - baselineMinX; offset += 6) {
+
+    const candidates = [origin + offset, origin - offset]
+    const match = candidates.find((x) => x >= baselineMinX && x <= baselineMaxX && strikerSpotIsClear(x))
+    if (match !== undefined) return match
+  }
+
+  return strikerBody.position.x
+}
+
 const placeStriker = (x) => {
-  
-  const nextX = Math.max(baselineMinX, Math.min(baselineMaxX, x))
+
+  const nextX = safeBaselineX(x)
   Body.setPosition(strikerBody, { x: nextX, y: baselineY() })
   Body.setVelocity(strikerBody, { x: 0, y: 0 })
 
@@ -201,7 +222,7 @@ canvas.addEventListener("pointerdown", (event) => {
   const point = pointerPosition(event)
   const distanceFromStriker = Math.hypot(point.x - strikerBody.position.x, point.y - strikerBody.position.y)
   const onBaseline = Math.abs(point.y - baselineY()) <= 34 && point.x >= baselineMinX - 20 && point.x <= baselineMaxX + 20
- 
+
   if (!onBaseline && distanceFromStriker > strikerSize) return
 
   if (onBaseline && distanceFromStriker > strikerSize) placeStriker(point.x)
@@ -217,7 +238,7 @@ canvas.addEventListener("pointermove", (event) => {
 })
 
 const releaseShot = (event) => {
-  
+
   if (!isDragging || phase !== "placing") return
   isDragging = false
 
@@ -327,7 +348,7 @@ const pocketCoin = (body) => {
   const firstRegular = shotRecord.pocketed.find((entry) => entry.type !== "queen")
 
   if (!firstRegular && body.coinType !== "queen" && body.coinType !== players[currentPlayer].piece) shotRecord.wrongFirst = true
-  
+
   shotRecord.pocketed.push({ type: body.coinType, body })
   removeCoin(body)
   playSound("pocket", body.coinType === "queen" ? 0.68 : 0.52)
@@ -488,6 +509,58 @@ const checkGameOver = () => {
   return true
 }
 
+const resetMatch = () => {
+
+  allCoinBodies.forEach((body) => Composite.remove(engine.world, body))
+  Composite.remove(engine.world, strikerBody)
+  coinBodies.length = 0
+
+  players.forEach((player) => {
+    player.score = 0
+    player.pocketedBodies.length = 0
+  })
+
+  allCoinBodies.forEach((body) => {
+    body.isPocketed = false
+    body.collisionFilter.mask = 4294967295
+
+    Body.setPosition(body, body.startPosition)
+    Body.setVelocity(body, { x: 0, y: 0 })
+    Body.setAngularVelocity(body, 0)
+
+    Sleeping.set(body, false)
+    coinBodies.push(body)
+    Composite.add(engine.world, body)
+  })
+  currentPlayer = 0
+  queenState.pendingPlayer = null
+  queenState.owner = null
+  lastRuling = "Player 1 breaks"
+  shotRecord = null
+  isDragging = false
+  dragPoint = null
+  strikerInWorld = false
+  gameOverElement.hidden = true
+
+  prepareStriker()
+}
+
+restartButton.addEventListener("click", resetMatch)
+playAgainButton.addEventListener("click", resetMatch)
+
+const stopJitter = () => {
+
+  if (phase !== "moving" || performance.now() - shotStartedAt < 500) return
+  const pieces = strikerInWorld ? [...coinBodies, strikerBody] : [...coinBodies]
+  pieces.forEach((body) => {
+
+    if (!body.isStatic && body.speed < 0.04 && body.angularSpeed < 0.04) {
+      Body.setVelocity(body, { x: 0, y: 0 })
+      Body.setAngularVelocity(body, 0)
+    }
+  })
+}
+
 const drawBoard = () => {
 
   ctx.clearRect(0, 0, boardSize, boardSize)
@@ -503,7 +576,7 @@ const drawBoard = () => {
     ctx.fillStyle = pattern
     ctx.fillRect(0, 0, boardSize, boardSize)
     ctx.restore()
-  }
+  } 
 
   ctx.strokeStyle = "#6b3f1d"
   ctx.lineWidth = 5
@@ -540,7 +613,7 @@ const drawPockets = () => {
     ctx.stroke()
     ctx.beginPath()
     ctx.arc(x, y, 21, 0, Math.PI * 2)
-
+    
     ctx.strokeStyle = "#3d2b1f"
     ctx.lineWidth = 3
     ctx.stroke()
@@ -577,7 +650,7 @@ const drawBaseline = (y, topSide) => {
   const spacing = 29
   ctx.strokeStyle = "#6b3f1d"
   ctx.lineWidth = 3
-
+  
   ctx.beginPath()
   ctx.moveTo(left, y - spacing / 2)
   ctx.lineTo(right, y - spacing / 2)
@@ -634,6 +707,11 @@ const drawSprite = (name, x, y, size) => {
   const image = images[name]
 
   if (image.complete && image.naturalWidth) {
+    ctx.beginPath()
+    ctx.arc(x + 2, y + 3, size * 0.43, 0, Math.PI * 2)
+    ctx.fillStyle = "rgba(50, 31, 18, 0.24)"
+
+    ctx.fill()
     ctx.drawImage(image, x - size / 2, y - size / 2, size, size)
   }
 
@@ -667,16 +745,16 @@ const drawAimGuide = () => {
   ctx.setLineDash([])
   ctx.fillStyle = "#6b3f1d"
   ctx.beginPath()
-
+  
   ctx.moveTo(strikerBody.position.x + directionX * (guideLength + 12), strikerBody.position.y + directionY * (guideLength + 12))
   ctx.lineTo(strikerBody.position.x + directionX * guideLength - directionY * 9, strikerBody.position.y + directionY * guideLength + directionX * 9)
   ctx.lineTo(strikerBody.position.x + directionX * guideLength + directionY * 9, strikerBody.position.y + directionY * guideLength - directionX * 9)
   ctx.closePath()
   ctx.fill()
-
+  
   const meterX = center - 110
   const meterY = currentPlayer === 0 ? boardSize - 94 : 78
-
+  
   ctx.fillStyle = "#f0e2c0"
   ctx.fillRect(meterX, meterY, 220, 16)
   ctx.strokeStyle = "#6b3f1d"
@@ -695,13 +773,14 @@ const render = (time = performance.now()) => {
 
   if (phase === "moving") detectPockets()
 
+  stopJitter()
   drawBoard()
   coinBodies.forEach((body) => drawSprite(body.coinType, body.position.x, body.position.y, coinSize))
   drawSprite("striker", strikerBody.position.x, strikerBody.position.y, strikerSize)
   drawAimGuide()
-
+  
   if (phase === "moving" && time - shotStartedAt > 650 && allPiecesSettled()) finishShot()
-
+  
   requestAnimationFrame(render)
 }
 
