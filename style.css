@@ -258,3 +258,8 @@ canvas {
   color: #e8d5a8;
   box-shadow: 0 4px 0 #203520;
 }
+
+
+.game-shell {
+  zoom: min(1, calc((100dvh - 60px) / 1200px));
+}
